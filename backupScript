@@ -1,0 +1,132 @@
+#!/bin/bash
+
+# Author: trinity3
+# Date Written: October 2, 2025
+# Description: Automated Arch + DWM setup using personal backup repo
+
+set -o errexit
+set -o nounset
+set -o pipefail
+shopt -s nullglob
+
+# Colors
+BLUE=$'\033[1;34m'
+GREEN=$'\033[1;32m'
+YELLOW=$'\033[1;33m'
+RED=$'\033[1;31m'
+NC=$'\033[0m'
+
+echo "${BLUE}󱓧 Welcome $USER. Starting your Arch+DWM system installation...${NC}"
+read -rp "Would you like to proceed? (y/N): " answer
+[[ "${answer,,}" =~ ^(y|yes)$ ]] || { echo -e " Cancelled."; exit 1; }
+
+### 󰚰 System Update
+echo -e "\n${BLUE}󰚰 Updating system...${NC}"
+sudo pacman -Syu --noconfirm || { echo -e "${RED}❌ Update failed.${NC}"; exit 1; }
+echo -e "${GREEN}✅ System updated.${NC}"
+
+### 󰐣 Enable wheel group for sudo
+echo -e "\n${BLUE}󰐣 Enabling wheel group in sudoers...${NC}"
+sudo EDITOR="sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/'" visudo \
+  && echo -e "${GREEN}✅ Wheel group enabled.${NC}" \
+  || echo -e "${YELLOW}⚠️  Skipped sudoers modification.${NC}"
+
+### 🔐 Install & Enable AppArmor + Firewalld
+echo -e "\n${BLUE}🔐 Installing AppArmor, Firewalld and git...${NC}"
+sudo pacman -S --needed --noconfirm apparmor firewalld git
+
+# Enable services
+sudo systemctl enable --now apparmor.service
+sudo systemctl enable --now firewalld.service
+
+# Firewalld basic configuration
+echo -e "\n${BLUE}🌐 Configuring Firewalld...${NC}"
+# Set default zone
+sudo firewall-cmd --set-default-zone=public
+# Allow DHCPv6 and SSH (adjust services if needed)
+sudo firewall-cmd --permanent --zone=public --add-service=dhcpv6-client
+sudo firewall-cmd --permanent --zone=public --add-service=ssh
+# Reload firewall to apply rules
+sudo firewall-cmd --reload
+
+echo -e "${GREEN}✅ AppArmor and Firewalld installed, enabled & configured.${NC}"
+
+### 󰌽 GRUB update for AppArmor
+echo -e "\n${BLUE}󰌽 Updating GRUB with AppArmor & LSM stacking...${NC}"
+if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub; then
+  sudo sed -i 's|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT="loglevel=3 quiet lsm=landlock,lockdown,yama,integrity,apparmor,bpf"|' /etc/default/grub
+else
+  echo 'GRUB_CMDLINE_LINUX_DEFAULT="loglevel=3 quiet lsm=landlock,lockdown,yama,integrity,apparmor,bpf"' | sudo tee -a /etc/default/grub
+fi
+sudo grub-mkconfig -o /boot/grub/grub.cfg && echo -e "${GREEN}✅ GRUB updated.${NC}"
+
+###  Install yay (AUR helper)
+echo -e "\n${BLUE} Installing yay...${NC}"
+sudo pacman -S --needed --noconfirm git base-devel gh vim neovim
+if [[ ! -d /tmp/yay ]]; then
+  git clone https://aur.archlinux.org/yay.git /tmp/yay
+fi
+cd /tmp/yay && makepkg -si --noconfirm
+echo -e "${GREEN}✅ yay installed.${NC}"
+
+###  Clone backup repo
+REPO_URL="https://github.com/Trinity3132/backUp_repo.git"
+CLONE_DIR="$HOME/backup"
+echo -e "\n${BLUE} Cloning backup repo...${NC}"
+if [[ ! -d "$CLONE_DIR" ]]; then
+  git clone "$REPO_URL" "$CLONE_DIR"
+else
+  cd "$CLONE_DIR" && git pull
+fi
+
+###  Install scripts and configs
+echo ">>> Installing scripts to ~/.local/bin/scripts..."
+mkdir -p "$HOME/.local/bin"
+cp -r "$CLONE_DIR/.local/bin/scripts" "$HOME/.local/bin/"
+
+echo ">>> Installing .config..."
+cp -r "$CLONE_DIR/.config" "$HOME/"
+
+echo ">>> Copying .screenlayout..."
+cp -r "$CLONE_DIR/.screenlayout" "$HOME/"
+
+echo ">>> Copying dotfiles..."
+for file in .bash_profile .bashrc .zprofile .zshrc .xinitrc; do
+  [[ -f "$CLONE_DIR/$file" ]] && cp "$CLONE_DIR/$file" "$HOME/"
+done
+
+### 🧩 Build dwm, st, dwmblocks
+echo -e "\n${BLUE}🧩 Building dwm, st, dwmblocks...${NC}"
+cd "$CLONE_DIR/.config/dwm" && sudo make clean install
+cd "$CLONE_DIR/.config/st" && sudo make clean install
+cd "$CLONE_DIR/.config/dwmblocks" && sudo make clean install
+
+### 📦 Install Pacman packages
+echo -e "\n${BLUE}📦 Installing Pacman packages...${NC}"
+PACMAN_PKGS=(
+  alacritty alsa-utils amd-ucode arandr atool base base-devel bat btop btrfs-progs
+  chromium clamav clang dunst eza fastfetch fd feh ffmpegthumbnailer firefox-developer-edition
+  flatpak fzf git github-cli go grub gst-plugin-pipewire jmtpfs jq lazygit lf
+  lib32-mesa lib32-vulkan-radeon libnotify libpulse libreoffice-fresh libva-utils linux-firmware
+  linux-zen lynx man-db mediainfo mesa-utils mpc mpd mpv nano neovim networkmanager nodejs
+  noto-fonts noto-fonts-emoji npm nsxiv numlockx openssh pavucontrol perl-file-mimeinfo pipewire
+  pipewire-alsa pipewire-jack pipewire-pulse playerctl plocate ripgrep rmpc
+)
+sudo pacman -S --needed --noconfirm "${PACMAN_PKGS[@]}" \
+  && echo -e "${GREEN}✅ Pacman packages installed.${NC}"
+
+### 📦 Install AUR packages
+echo -e "\n${BLUE}📦 Installing AUR packages with yay...${NC}"
+AUR_PKGS=(
+  jmtpfs mullvad-browser-bin nerd-fonts-sf-mono papirus-icon-theme-git paru paru-debug
+  postman-bin simple-mtpfs spotify yay yay-debug
+)
+yay -S --needed --noconfirm "${AUR_PKGS[@]}" \
+  && echo -e "${GREEN}✅ AUR packages installed.${NC}"
+
+### 🎨 Bootloader themes
+echo -e "\n${BLUE}🎨 Installing GRUB bootloader themes...${NC}"
+cd "$CLONE_DIR/.config/voidrice/Top-5-Bootloader-Themes"
+chmod +x install.sh && sudo ./install.sh
+
+echo -e "\n${GREEN}✅ Done! System is ready. Repo kept at $CLONE_DIR${NC}"
